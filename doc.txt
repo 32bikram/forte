@@ -1,0 +1,9 @@
+##1
+
+self.user_rooms["Bikram"] = ["room1", "room2", "room3"]
+The first iteration removes "room1".
+The list becomes:
+["room2", "room3"]
+The iterator moves forward and can skip "room2".
+
+##2

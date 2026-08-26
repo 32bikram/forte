@@ -1,0 +1,18 @@
+OAuth2PasswordBearer fails for websockets
+========================================================
+
+The problem: OAuth2PasswordBearer is a helper class that FastAPI gives you to grab a token from a request. But it was written
+with one assumption baked in: "I will always be given a normal HTTP Request object, and I'll look inside request.headers for 
+the token." A WebSocket connection isn't a Request object — it's a different kind of object (WebSocket), even though it also 
+has headers. So when you write Depends(oauth2_schema) on a websocket route, FastAPI tries to hand it a WebSocket object 
+instead of the Request it's expecting. It doesn't crash loudly — it just quietly fails to find the token, so your function 
+ends up with token = None (or garbage), and everything downstream (JWT decode, etc.) fails because there was never a real 
+token to check in the first place.
+In plain terms: OAuth2PasswordBearer is a tool built specifically for regular API endpoints (GET/POST/etc). WebSocket endpoint
+s are a different kind of connection under the hood, and that tool was never built to look for a token there — so it silently 
+doesn't work, instead of giving you a clear error telling you why. The fix, in the same simple terms: instead of using that 
+tool, you just reach into the websocket's headers yourself (websocket.headers.get("authorization")) — which works fine because
+headers do exist on a websocket connection, you just can't use the OAuth2PasswordBearer shortcut to get them. Then you reject
+bad connections using WebSocketException instead of HTTPException, because that's the correct "closing signal" for a 
+websocket handshake — using the wrong one is what was causing the confusing plain 403 instead of a real error.
+

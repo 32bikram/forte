@@ -1,0 +1,109 @@
+from fastapi import WebSocket, WebSocketDisconnect, Depends, APIRouter
+from sqlalchemy.orm import Session
+from pydantic import ValidationError
+from . . import oauth2, schemas, database
+from . .services.connection_manager import manager
+
+router = APIRouter(
+    tags = ['websocket']
+)
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, db : Session = Depends(database.get_db),
+                              client_info = Depends(oauth2.get_current_user_ws)):
+
+    username = client_info.username
+    await manager.connect_global(websocket,username)
+
+    async def validater(data, schema):
+        try:
+            new_data = schema.model_validate(data)
+        except ValidationError:
+            await websocket.send_json({
+                "response" : "invalid data format"
+            })
+            return
+        return new_data
+
+    async def make_user_data(data):
+        try:
+            user_data=schemas.Userdata.model_validate({
+                "username" : username,
+                "room_id" : data["room_id"]
+            })
+        except ValidationError:
+            await websocket.send_json({
+                "response" : "improper data format"
+            })
+            return
+        return user_data
+
+    async def responder(message):
+        if message is not None:
+            await websocket.send_json({
+                "response" : message
+            })
+            return False
+        return True
+        
+    try:
+        while True:
+            data = await websocket.receive_json()
+            if "type" not in data:
+                await websocket.send_json({
+                    "message" : "Invalid data format"
+                })
+                continue
+
+            if data["type"] == "global message":
+                new_data = await validater(data, schemas.GlobalMessage)
+                if new_data is None:
+                    continue
+                await manager.broadcast_global(new_data.message)
+
+            elif data["type"] == "create room":
+                new_data = await validater(data, schemas.Datavalidate)
+                user_data = await make_user_data(data)
+                if new_data is None or user_data is None:
+                    continue
+                message = await manager.create_room(websocket, user_data)
+                if await responder(message):
+                    continue
+
+            elif data["type"] == "join room":
+                new_data = await validater(data, schemas.Datavalidate)
+                user_data= await make_user_data(data)
+                if new_data is None or user_data is None:
+                    continue
+                message = await manager.connect_local(websocket, user_data)
+                if await responder(message):
+                    continue
+
+            elif data["type"] == "local message":
+                new_data = await validater(data, schemas.MessageValidate)
+                user_data= await make_user_data(data)
+                if new_data is None or user_data is None:
+                    continue
+                message = await manager.broadcast_local(user_data, new_data.message)
+                if await responder(message):
+                    continue
+
+            elif data["type"] == "disconnect Local":
+                new_data = await validater(data, schemas.Datavalidate)
+                user_data = await make_user_data(data)
+                if new_data is None or user_data is None:
+                    continue
+                message = await manager.disconnect_local(websocket, user_data)
+                if await responder(message):
+                    continue
+
+            else:
+                await websocket.send_json({
+                    "response" : "invalid data format or type"
+                })
+                continue
+
+
+    except WebSocketDisconnect:
+        await manager.disconnect_global(websocket, username)
+        await manager.broadcast_global(f"{username} left the chat")
