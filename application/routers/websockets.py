@@ -38,13 +38,9 @@ async def websocket_endpoint(websocket: WebSocket, db : Session = Depends(databa
             return
         return user_data
 
-    async def responder(message):
-        if message is not None:
-            await websocket.send_json({
-                "response" : message
-            })
-            return False
-        return True
+    async def responder(schema : schemas.WebSocketResponse):
+        await websocket.send_json(schema.model_dump())
+        return schema.status == "ok"
         
     try:
         while True:
@@ -59,50 +55,44 @@ async def websocket_endpoint(websocket: WebSocket, db : Session = Depends(databa
                 new_data = await validater(data, schemas.GlobalMessage)
                 if new_data is None:
                     continue
-                await manager.broadcast_global(new_data.message)
+                response = await manager.broadcast_global(new_data.message)
+                await responder(response)
 
             elif data["type"] == "create room":
                 new_data = await validater(data, schemas.Datavalidate)
                 user_data = await make_user_data(data)
                 if new_data is None or user_data is None:
                     continue
-                message = await manager.create_room(websocket, user_data)
-                if await responder(message):
-                    continue
+                response = await manager.create_room(websocket, user_data)
+                await responder(response)
 
             elif data["type"] == "join room":
                 new_data = await validater(data, schemas.Datavalidate)
                 user_data= await make_user_data(data)
                 if new_data is None or user_data is None:
                     continue
-                message = await manager.connect_local(websocket, user_data)
-                if await responder(message):
-                    continue
+                response = await manager.connect_local(websocket, user_data)
+                await responder(response)
 
             elif data["type"] == "local message":
                 new_data = await validater(data, schemas.MessageValidate)
                 user_data= await make_user_data(data)
                 if new_data is None or user_data is None:
                     continue
-                message = await manager.broadcast_local(user_data, new_data.message)
-                if await responder(message):
-                    continue
+                response = await manager.broadcast_local(user_data, new_data.message)
+                await responder(response)
 
             elif data["type"] == "disconnect Local":
                 new_data = await validater(data, schemas.Datavalidate)
                 user_data = await make_user_data(data)
                 if new_data is None or user_data is None:
                     continue
-                message = await manager.disconnect_local(websocket, user_data)
-                if await responder(message):
-                    continue
+                response = await manager.disconnect_local(websocket, user_data)
+                await responder(response)
 
             else:
-                await websocket.send_json({
-                    "response" : "invalid data format or type"
-                })
-                continue
-
+                response = schemas.WebSocketResponse(status = "error", detail="invalid data format", action="data vlidation")
+                await responder(response)
 
     except WebSocketDisconnect:
         await manager.disconnect_global(websocket, username)

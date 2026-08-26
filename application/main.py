@@ -9,4 +9,4 @@ app.include_router(websockets.router)
 
 @app.get("/")
 async def get():
-    return "hiiiiii"
+    return "connected"

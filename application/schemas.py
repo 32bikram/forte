@@ -33,3 +33,8 @@ class MessageValidate(Datavalidate):
 class GlobalMessage(BaseModel):
     type : str
     message : str
+
+class WebSocketResponse(BaseModel):
+    status : str
+    detail : str
+    action : str

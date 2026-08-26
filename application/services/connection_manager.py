@@ -34,19 +34,20 @@ class ConnectionManager:
             if user_data.username not in self.user_rooms:
                 self.user_rooms[user_data.username] = []
             self.user_rooms[user_data.username].append(user_data.room_id)
+            return schemas.WebSocketResponse(status="ok", detail="successfully created room with the id", action = "create_room")
         else:
-            return "room with this id already exist"
+            return schemas.WebSocketResponse(status="error", detail="room with this id already exist", action = "create_room")
         
 
     async def connect_local(self, websocket:WebSocket, user_data : schemas.Userdata):
         #checking if user is already in that room
         rooms_user_joined = self.user_rooms.get(user_data.username,[]) #if user not in any room we will get key error
         if user_data.room_id in rooms_user_joined:
-            return "You are already a member of this room"
+            return schemas.WebSocketResponse(status = "error", detail="User is already in this room", action = "connect_local")
         
         #the creation of room
         if user_data.room_id not in self.rooms:
-            return "There is no room with this id"
+            return schemas.WebSocketResponse(status="error", detail="There is no room with this id", action = "connect_local")
         self.rooms[user_data.room_id].append(LocalConnection(websocket,user_data))
 
         #mainting the rooms user joined
@@ -56,11 +57,12 @@ class ConnectionManager:
 
         for member in self.rooms[user_data.room_id]:
             await self.send_personal_message(f"{user_data.username} has joined", member.websocket)
+        return schemas.WebSocketResponse(status = "ok", detail="joined the room", action = "connect_local")
 
     async def disconnect_global(self, websocket: WebSocket, username : str):
         #removing him from the rooms he joined
         for room_ids in self.user_rooms.get(username,[]).copy(): #reason in doc 1, user might not be in any room so chance of key error
-            await self.disconnect_local(websocket, schemas.Userdata(username,room_ids))
+            await self.disconnect_local(websocket, schemas.Userdata(username=username,room_id=room_ids))
 
         self.user_rooms.pop(username,None) #if exist then delete else skip
             
@@ -83,7 +85,7 @@ class ConnectionManager:
                 del self.room_host[user_data.room_id]
 
             else:
-                for members in self.rooms[user_data.room_id]:
+                for members in self.rooms[user_data.room_id].copy():
                     if(members.user_data.username == user_data.username):
                         await self.send_personal_message("you are leaving the room", members.websocket)
                         self.rooms[user_data.room_id].remove(members)
@@ -93,8 +95,9 @@ class ConnectionManager:
 
                 for member in self.rooms[user_data.room_id].copy():
                     await self.send_personal_message(f"{user_data.username} has left", member.websocket)
+            return schemas.WebSocketResponse(status = "ok", detail = "disconnected from the room", action = "disconnect_local")
         else:
-            return "No room with this id exist"
+            return schemas.WebSocketResponse(status = "error", detail = "No room with this id exist", action = "disconnect_local")
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         await websocket.send_text(message)
@@ -102,12 +105,14 @@ class ConnectionManager:
     async def broadcast_global(self, message: str):
         for connection in self.active_connections:
             await connection.websocket.send_text(message)
+        return schemas.WebSocketResponse(status="ok", detail="successfully published message", action = "broadcast_global")
 
     async def broadcast_local(self, user_data:schemas.Userdata, message:str):
         if user_data.room_id in self.user_rooms.get(user_data.username,[]):
             for local_player in self.rooms.get(user_data.room_id,[]):
                 await local_player.websocket.send_text(message)
+            return schemas.WebSocketResponse(status="ok", detail="successfully published message", action = "broadcast_local")
         else:
-            return "You are not a member of this room"
+            return schemas.WebSocketResponse(status = "error", detail="Not a member of this room", action = "broadcast_local")
 
 manager = ConnectionManager()
