@@ -14,7 +14,7 @@ async def lifespan(app : FastAPI):
         manager._listner_task.cancel()
 
         try:
-            await manager.listner_task
+            await manager._listner_task
         except Exception:
             pass
         await manager.pubsub.close()

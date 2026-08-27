@@ -36,7 +36,7 @@ class ConnectionManager:
         # self.room_host : dict[str,str] = {} #mapping room : host
         self.redis = redis.Redis.from_url(settings.redis_url, decode_responses=True)
         self.pubsub = self.redis.pubsub()
-        self._listener_task: asyncio.Task | None = None
+        self._listner_task: asyncio.Task | None = None
 
     async def start_listner(self):
         await self.pubsub.subscribe(GLOBAL_CHANNEL)
@@ -133,9 +133,9 @@ class ConnectionManager:
             self.rooms[user_data.room_id] = []
         self.rooms[user_data.room_id].append(LocalConnection(websocket,user_data))
 
-        await self.pubsub.subscribe(room_channel, user_data.username)
+        await self.pubsub.subscribe(room_channel)
 
-        await self._publish_to_rooms(user_data.room_id, f"{user_data.username} has joined the room")
+        await self._publish_to_room(user_data.room_id, f"{user_data.username} has joined the room")
 
         return schemas.WebSocketResponse(
                         status="ok",
@@ -149,13 +149,13 @@ class ConnectionManager:
         room_members_key = _room_members_key(user_data.room_id)
 
         room_exists = await self.redis.exists(room_host_key)
-        if room_exists is None:
+        if not room_exists:
             return schemas.WebSocketResponse(
                 status = "error",
                 detail = "no room with this id",
                 action = "disconnect local"
             )
-        if self.redis.get(room_host_key) == user_data.username:
+        if await self.redis.get(room_host_key) == user_data.username:
             members = await self.redis.hkeys(room_members_key)
 
             await self._publish_to_room(user_data.room_id, f"room with id:{user_data.room_id} has been deleted")
