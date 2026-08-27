@@ -1,16 +1,35 @@
-from fastapi import WebSocket, WebSocketDisconnect, Depends, APIRouter
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, APIRouter
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 from . . import oauth2, schemas, database
 from . .services.connection_manager import manager
+
+@asynccontextmanager
+async def lifespan(app : FastAPI):
+    await manager.start_listner()
+    yield
+
+    if manager._listner_task:
+        manager._listner_task.cancel()
+
+        try:
+            await manager.listner_task
+        except Exception:
+            pass
+        await manager.pubsub.close()
+        await manager.redis.aclose()
 
 router = APIRouter(
     tags = ['websocket']
 )
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, db : Session = Depends(database.get_db),
-                              client_info = Depends(oauth2.get_current_user_ws)):
+async def websocket_endpoint(
+    websocket: WebSocket, 
+    db : Session = Depends(database.get_db),
+    client_info = Depends(oauth2.get_current_user_ws)
+    ):
 
     username = client_info.username
     await manager.connect_global(websocket,username)

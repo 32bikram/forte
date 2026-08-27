@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     algorithm: str
     access_token_expire_minutes: int
     llm_api : str
+    redis_url : str
     class Config:
         env_file = ".env"
 

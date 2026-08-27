@@ -1,5 +1,8 @@
 from fastapi import WebSocket, WebSocketException, status
+import asyncio, json
 from . . import schemas
+from . .config import settings
+import redis.asyncio as redis
 
 class LocalConnection:
     def __init__(self, websocket: WebSocket, user_data : schemas.Userdata):
@@ -13,106 +16,220 @@ class GlobalConnection:
         self.username = username
 # will be used for global connections no room id or role
 
+ROOM_TTL = 86_400
+
+def _room_members_key(room_id : str):
+    return f"room:members:{room_id}"
+def _user_rooms_key(username : str):
+    return f"user:rooms:{username}"
+def _room_host_key(room_id : str):
+    return f"room:host:{room_id}"
+GLOBAL_CHANNEL = "global_broadcast"
+def _room_channel(room_id : str):
+    return f"room:broadcast:{room_id}"
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[GlobalConnection] = []
         self.rooms: dict[str, list[LocalConnection]] = {} #room_id, {websoc,{username, role}}
-        self.user_rooms : dict[str, list[str]] = {} # username, li[room_id]
-        self.room_host : dict[str,str] = {} #mapping room : host
+        # self.user_rooms : dict[str, list[str]] = {} # username, li[room_id]
+        # self.room_host : dict[str,str] = {} #mapping room : host
+        self.redis = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        self.pubsub = self.redis.pubsub()
+        self._listener_task: asyncio.Task | None = None
 
+    async def start_listner(self):
+        await self.pubsub.subscribe(GLOBAL_CHANNEL)
+        self._listner_task = asyncio.create_task(self._pubsub_listner_loop())
+
+    async def _pubsub_listner_loop(self):
+        async for raw_data in self.pubsub.listen():
+            if raw_data["type"] != "message":
+                continue
+
+            channel: str = raw_data["channel"]
+            payload : dict = json.loads(raw_data["data"])
+            message : str = payload["data"]
+
+            if channel == GLOBAL_CHANNEL:
+                for conn in list(self.active_connections):
+                    try:
+                        await conn.websocket.send_text(message)
+                    except Exception:
+                        pass
+
+            elif channel.startswith("room:broadcast:"):
+                room_id : str = channel.removeprefix("room:broadcast:")
+                for user in self.rooms.get(room_id,[]):
+                    try:
+                        await user.websocket.send_text(message)
+                    except Exception:
+                        pass
+            
     async def connect_global(self, websocket: WebSocket, username : str):
         await websocket.accept()
         self.active_connections.append(GlobalConnection(websocket,username))
 
     async def create_room(self, websocket:WebSocket, user_data : schemas.Userdata):
-        if user_data.room_id not in self.rooms:
-            self.room_host[user_data.room_id] = user_data.username
-            self.rooms[user_data.room_id] =[]
-            self.rooms[user_data.room_id].append(LocalConnection(websocket,user_data))
-        
-            #mainting the rooms user joined
-            if user_data.username not in self.user_rooms:
-                self.user_rooms[user_data.username] = []
-            self.user_rooms[user_data.username].append(user_data.room_id)
-            return schemas.WebSocketResponse(status="ok", detail="successfully created room with the id", action = "create_room")
-        else:
-            return schemas.WebSocketResponse(status="error", detail="room with this id already exist", action = "create_room")
-        
+        room_host_key = _room_host_key(room_id=user_data.room_id)
+        room_members_key = _room_members_key(user_data.room_id)
+        user_room_key = _user_rooms_key(user_data.username)
+
+        room_exists = await self.redis.exists(room_host_key)
+        if room_exists:
+            return schemas.WebSocketResponse(
+                status="error", 
+                detail="room with this id already exist",
+                action = "create_room"
+            )
+
+        await self.redis.set(room_host_key,user_data.username, ex=ROOM_TTL)
+        await self.redis.hset(room_members_key, user_data.username, "host")
+        await self.redis.expire(room_members_key,ROOM_TTL) #setting expiry
+
+        await self.redis.sadd(user_room_key, user_data.room_id)
+        await self.redis.expire(user_room_key, ROOM_TTL)
+
+        self.rooms[user_data.room_id]= [(LocalConnection(websocket, user_data))]
+
+        await self.pubsub.subscribe(_room_channel(user_data.room_id))
+
+        return schemas.WebSocketResponse(
+            status="ok",
+            detail="Room has been created",
+            action = "create_room"
+        )
 
     async def connect_local(self, websocket:WebSocket, user_data : schemas.Userdata):
-        #checking if user is already in that room
-        rooms_user_joined = self.user_rooms.get(user_data.username,[]) #if user not in any room we will get key error
-        if user_data.room_id in rooms_user_joined:
-            return schemas.WebSocketResponse(status = "error", detail="User is already in this room", action = "connect_local")
-        
-        #the creation of room
+        room_host_key = _room_host_key(user_data.room_id)
+        user_room_key = _user_rooms_key(user_data.username)
+        room_members_key = _room_members_key(user_data.room_id)
+        room_channel = _room_channel(user_data.room_id)
+
+        #room doesnt exist
+        room_exists = await self.redis.exists(room_host_key)
+        if not room_exists:
+            return schemas.WebSocketResponse(
+                status = "error",
+                detail = "No room with this id exists",
+                action = "connect_local"
+            )
+        #already member
+        flag = await self.redis.sismember(user_room_key,user_data.room_id)
+        if flag:
+            return schemas.WebSocketResponse(
+                status="error",
+                detail = "already member of this room",
+                action= "connect_local"
+            )
+
+        await self.redis.hset(room_members_key, user_data.username, "member")
+        await self.redis.expire(room_members_key, ROOM_TTL)
+
+        await self.redis.sadd(user_room_key, user_data.room_id)
+        await self.redis.expire(user_room_key, ROOM_TTL)
+
         if user_data.room_id not in self.rooms:
-            return schemas.WebSocketResponse(status="error", detail="There is no room with this id", action = "connect_local")
+            self.rooms[user_data.room_id] = []
         self.rooms[user_data.room_id].append(LocalConnection(websocket,user_data))
 
-        #mainting the rooms user joined
-        if user_data.username not in self.user_rooms:
-            self.user_rooms[user_data.username] = []
-        self.user_rooms[user_data.username].append(user_data.room_id)
+        await self.pubsub.subscribe(room_channel, user_data.username)
 
-        for member in self.rooms[user_data.room_id]:
-            await self.send_personal_message(f"{user_data.username} has joined", member.websocket)
-        return schemas.WebSocketResponse(status = "ok", detail="joined the room", action = "connect_local")
+        await self._publish_to_rooms(user_data.room_id, f"{user_data.username} has joined the room")
+
+        return schemas.WebSocketResponse(
+                        status="ok",
+                        detail = "successfully joined room",
+                        action= "connect_local"
+        )
+
+    async def disconnect_local(self, websocket:WebSocket, user_data : schemas.Userdata):
+        user_room_key = _user_rooms_key(user_data.username)
+        room_host_key = _room_host_key(user_data.room_id)
+        room_members_key = _room_members_key(user_data.room_id)
+
+        room_exists = await self.redis.exists(room_host_key)
+        if room_exists is None:
+            return schemas.WebSocketResponse(
+                status = "error",
+                detail = "no room with this id",
+                action = "disconnect local"
+            )
+        if self.redis.get(room_host_key) == user_data.username:
+            members = await self.redis.hkeys(room_members_key)
+
+            await self._publish_to_room(user_data.room_id, f"room with id:{user_data.room_id} has been deleted")
+            for member in members:
+                await self.redis.srem(_user_rooms_key(member),user_data.room_id)
+
+            await self.redis.delete(room_host_key)
+            await self.redis.delete(room_members_key)
+            await self.pubsub.unsubscribe(_room_channel(user_data.room_id))
+            #removing from local mem
+            self.rooms.pop(user_data.room_id, None) #returns none if the key doesnt exist
+
+            return schemas.WebSocketResponse(
+                status = "ok",
+                detail = "room is deleted",
+                action = "disconnect_local"
+            )
+
+        else:
+            members = await self.redis.hkeys(room_members_key) #getting all members
+            await self.send_personal_message("you are leaving the room", websocket)
+            await self._publish_to_room(user_data.room_id, f"{user_data.username} has left the room")
+            await self.redis.srem(user_room_key, user_data.room_id)
+            await self.redis.hdel(room_members_key, user_data.username)
+
+            #local cleanup
+            for user in self.rooms.get(user_data.room_id,[]).copy():
+                if user.user_data.username == user_data.username:
+                    self.rooms[user_data.room_id].remove(user)
+
+        return schemas.WebSocketResponse(
+            status="ok",
+            detail="disconnected from the room",
+            action="disconnect_local"
+        )
 
     async def disconnect_global(self, websocket: WebSocket, username : str):
-        #removing him from the rooms he joined
-        for room_ids in self.user_rooms.get(username,[]).copy(): #reason in doc 1, user might not be in any room so chance of key error
-            await self.disconnect_local(websocket, schemas.Userdata(username=username,room_id=room_ids))
-
-        self.user_rooms.pop(username,None) #if exist then delete else skip
-            
 
         for conn in self.active_connections:
             if conn.websocket==websocket:
                 self.active_connections.remove(conn)
                 break
 
-    async def disconnect_local(self, websocket:WebSocket, user_data : schemas.Userdata):
-        if user_data.room_id in self.rooms:
-            if(self.room_host[user_data.room_id]==user_data.username):
-                for member in self.rooms[user_data.room_id]:
-                    if member.user_data.username != user_data.username: #skipping notifying the host
-                        await self.send_personal_message(f"room with id {user_data.room_id} was deleted", member.websocket)
-
-                    self.user_rooms[member.user_data.username].remove(member.user_data.room_id) #removing the room from users personal room list too
-
-                del self.rooms[user_data.room_id]
-                del self.room_host[user_data.room_id]
-
-            else:
-                for members in self.rooms[user_data.room_id].copy():
-                    if(members.user_data.username == user_data.username):
-                        await self.send_personal_message("you are leaving the room", members.websocket)
-                        self.rooms[user_data.room_id].remove(members)
-                        if user_data.room_id in self.user_rooms[user_data.username]: #removing that room from users own list
-                            self.user_rooms.get(user_data.username,[]).remove(user_data.room_id)
-                        break
-
-                for member in self.rooms[user_data.room_id].copy():
-                    await self.send_personal_message(f"{user_data.username} has left", member.websocket)
-            return schemas.WebSocketResponse(status = "ok", detail = "disconnected from the room", action = "disconnect_local")
-        else:
-            return schemas.WebSocketResponse(status = "error", detail = "No room with this id exist", action = "disconnect_local")
+    async def _publish_to_room(self, room_id : str, message : str):
+        payload = json.dumps({"channel":_room_channel(room_id), "data":message})
+        await self.redis.publish(_room_channel(room_id), payload)
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         await websocket.send_text(message)
 
     async def broadcast_global(self, message: str):
-        for connection in self.active_connections:
-            await connection.websocket.send_text(message)
-        return schemas.WebSocketResponse(status="ok", detail="successfully published message", action = "broadcast_global")
+        # for connection in self.active_connections:
+        #     await connection.websocket.send_text(message)
+        await self.redis.publish(GLOBAL_CHANNEL, message)
+
+        return schemas.WebSocketResponse(
+            status="ok",
+            detail="successfully published message",
+            action = "broadcast_global"
+        )
+
+
 
     async def broadcast_local(self, user_data:schemas.Userdata, message:str):
-        if user_data.room_id in self.user_rooms.get(user_data.username,[]):
-            for local_player in self.rooms.get(user_data.room_id,[]):
-                await local_player.websocket.send_text(message)
-            return schemas.WebSocketResponse(status="ok", detail="successfully published message", action = "broadcast_local")
-        else:
-            return schemas.WebSocketResponse(status = "error", detail="Not a member of this room", action = "broadcast_local")
+        user_rooms_key = _user_rooms_key(user_data.username)
+        flag = await self.redis.sismember(user_rooms_key, user_data.room_id)
+        if not flag:
+            return schemas.WebSocketResponse(
+                status="ok",
+                detail="You are not a member of this room",
+                action = "broadcast_local"
+            )
+        
+        await self._publish_to_room(user_data.room_id, message)
+        return schemas.WebSocketResponse(status="ok", detail="successfully published message", action = "broadcast_local")
 
 manager = ConnectionManager()
