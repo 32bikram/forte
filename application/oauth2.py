@@ -1,17 +1,25 @@
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 from fastapi.security import OAuth2PasswordBearer
-from fastapi import Depends, HTTPException, status, WebSocket, WebSocketException
+from fastapi import Depends, HTTPException, status, WebSocket, WebSocketException, Request
 from . import schemas, models, database
 from sqlalchemy.orm import Session
 from .config import settings
 
-oauth2_schema = OAuth2PasswordBearer(tokenUrl="login") 
+oauth2_schema = OAuth2PasswordBearer(tokenUrl="login", auto_error=False) #autoerror false so it doesnt throw error befor we check cookie
 #it tells from the login function we will get the token
 
 SECRET_KEY = settings.secret_key
 ALGORITHM = settings.algorithm
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
+def get_token_from_request(request : Request, header_token : str | None):
+    token = header_token or request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(
+            status_code= status.HTTP_401_UNAUTHORIZED,
+            detail = "couldnt validate token"
+        )
+    return token
 
 def create_access_token(data : dict):
     to_encode = data.copy() #we dont wanna change the actual data
@@ -34,8 +42,8 @@ def verify_access_token(token : str, credential_exception):
     
     return token_data
 
-def get_current_user(token : str = Depends(oauth2_schema), db : Session = Depends(database.get_db)):
-
+def get_current_user(request : Request, token : str = Depends(oauth2_schema), db : Session = Depends(database.get_db)):
+    token = get_token_from_request(request, token)
     credential_exception = HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = "couldnt validate credentials",
                                          headers = {"WWW-Authenticate":"Bearer"})
     token = verify_access_token(token, credential_exception)
@@ -44,12 +52,9 @@ def get_current_user(token : str = Depends(oauth2_schema), db : Session = Depend
     return user
 
 def get_current_user_ws(websocket: WebSocket, db: Session = Depends(database.get_db)):
-    auth_header = websocket.headers.get("authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
+    token = websocket.cookies.get("access_token")
+    if not token:
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
-
-    token = auth_header.removeprefix("Bearer ")
-
     credential_exception = WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
     token_data = verify_access_token(token, credential_exception)
 
