@@ -38,4 +38,5 @@ def getUser(username : str, db : Session = Depends(get_db)):
           status_code = status.HTTP_404_NOT_FOUND,   
           detail = f"no user name {username}"
          )
+    res.reponse = "ok"
     return res

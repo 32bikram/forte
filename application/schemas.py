@@ -8,7 +8,7 @@ class User(BaseModel):
 
 class ReturnUser(BaseModel):
     username : str
-    response : str
+    response : str | None = None
 
 class JWTData(BaseModel):
     access_token : str
