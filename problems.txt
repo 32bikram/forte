@@ -15,4 +15,3 @@ tool, you just reach into the websocket's headers yourself (websocket.headers.ge
 headers do exist on a websocket connection, you just can't use the OAuth2PasswordBearer shortcut to get them. Then you reject
 bad connections using WebSocketException instead of HTTPException, because that's the correct "closing signal" for a 
 websocket handshake — using the wrong one is what was causing the confusing plain 403 instead of a real error.
-

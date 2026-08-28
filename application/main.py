@@ -1,4 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from .routers import auth, user, websockets, persistantDataShareing
 from .config import settings
 import redis
