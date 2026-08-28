@@ -97,6 +97,7 @@ class ConnectionManager:
         })
         await self.pubsub.publish(ONLINE_USERS,payload)
 
+        #last 100 messages
         messages = self.redis.lrange(GLOBAL_CHANNEL,0,99)
         messages.reverse()
         payload = {
