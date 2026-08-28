@@ -119,4 +119,4 @@ async def websocket_endpoint(
 
     except WebSocketDisconnect:
         await manager.disconnect_global(websocket, username)
-        await manager.broadcast_global(f"{username} left the chat")
+        await manager.broadcast_global(f"{username} left the chat",username)

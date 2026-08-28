@@ -46,7 +46,7 @@ class ConnectionManager:
         await self.pubsub.subscribe(GLOBAL_CHANNEL)
         self._listner_task = asyncio.create_task(self._pubsub_listner_loop())
 
-    async def _safe_send(slef, websocket:WebSocket, payload :dict):
+    async def _safe_send(self, websocket:WebSocket, payload :dict):
     #handles the sending if data is not send handles the exception and return false to remove ws from active conn
         try:
             await websocket.send_json(payload)
@@ -66,7 +66,7 @@ class ConnectionManager:
             message : str = payload["data"]
 
             #storing the message in cache for later use 
-            await self.redis.lpush(channel,payload)
+            await self.redis.lpush(channel,json.dumps(payload))
             await self.redis.ltrim(channel,0,99)
             
             if channel == GLOBAL_CHANNEL:
@@ -77,7 +77,7 @@ class ConnectionManager:
                         dead_connection.append(conn)
                 #cleanup of socket
                 for conn in dead_connection:
-                    self.disconnect_global(conn.websocket,username)
+                    await self.disconnect_global(conn.websocket,username)
 
             elif channel.startswith("room:broadcast:"):
                 room_id : str = channel.removeprefix("room:broadcast:")
@@ -88,25 +88,27 @@ class ConnectionManager:
                         dead_connection.append(user)
 
                 for conn in dead_connection:
-                    self.disconnect_global(conn.websocket,username)
+                    await self.disconnect_global(conn.websocket,username)
 
             elif channel == ONLINE_USERS:
                 dead_connection = []
                 payload = {"channel":ONLINE_USERS,"username":message}
-                if not await self._safe_send(conn.websocket, payload):
-                    dead_connection.append(conn)
+                for conn in list(self.active_connections):
+                    if not await self._safe_send(conn.websocket, payload):
+                        dead_connection.append(conn)
                 #cleanup of dead socket
                 for conn in dead_connection:
-                    self.disconnect_global(conn.websocket,username)
+                    await self.disconnect_global(conn.websocket,conn.username)
 
             elif channel == OFFLINE_USERS:
                 dead_connection = []
                 payload = {"channel":OFFLINE_USERS,"username":message}
-                if not await self._safe_send(conn.websocket, payload):
-                    dead_connection.append(conn)
+                for conn in list(self.active_connections):
+                    if not await self._safe_send(conn.websocket, payload):
+                        dead_connection.append(conn)
                 #cleanup of dead socket
                 for conn in dead_connection:
-                    self.disconnect_global(conn.websocket,username)
+                    await self.disconnect_global(conn.websocket,conn.username)
 
     async def connect_global(self, websocket: WebSocket, username : str):
         await websocket.accept()
