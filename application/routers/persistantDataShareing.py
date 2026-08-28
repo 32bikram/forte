@@ -15,7 +15,7 @@ async def get_online_users():
     online_users = await manager.redis.hkeys("online_users:")
     return {"online_users":online_users}
 
-@router.get("/room_members", response_model = schemas.Rommmembers)
+@router.get("/room_members", response_model = schemas.Roommembers)
 async def get_room_members(room_id :str):
     members = await manager.redis.hgetall(f"room:members:{room_id}")
     return {"room_id" : room_id,
