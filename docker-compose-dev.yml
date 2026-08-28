@@ -1,0 +1,32 @@
+services:
+  api:
+    build: .
+    image: kiertolainen/forte:latest
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - 8000:8000
+    volumes:
+      - ./:/usr/src/app:ro
+    command: uvicorn application.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - ./.env
+
+
+  postgres:
+        image: postgres
+        environment:
+          - POSTGRES_PASSWORD=password123
+          - POSTGRES_DB=pokedeqs
+        volumes:
+          - myvolume:/var/lib/postgresql
+  
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+    myvolume:
+    #the name taken from postgres volume name

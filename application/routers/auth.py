@@ -24,7 +24,7 @@ def getUser(response : Response, user : OAuth2PasswordRequestForm = Depends(), d
         value=access_token,
         httponly=True,     # It means JavaScript running in the browser cannot access this cookie.
         secure=True,       # Only send this cookie over HTTPS.
-        samesite="lax",    # "strict" blocks it if frontend/backend are different domains
+        samesite="none",    # "strict" blocks it if frontend/backend are different domains
         max_age=60 * 60,   # 3600 sec
     )
     return {"access_token": access_token, "token_type" : "bearer"}

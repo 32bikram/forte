@@ -3,7 +3,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, APIRouter
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 from . . import oauth2, schemas, database
-from . .services.connection_manager import manager, LocalConnection
+from . .services.connection_manager import manager
+import asyncio
 
 @asynccontextmanager
 async def lifespan(app : FastAPI):
@@ -15,7 +16,7 @@ async def lifespan(app : FastAPI):
 
         try:
             await manager._listner_task
-        except Exception:
+        except asyncio.CancelledError:
             pass
         await manager.pubsub.close()
         await manager.redis.aclose()

@@ -1,8 +1,10 @@
 from fastapi import WebSocket, WebSocketException, status
-import asyncio, json
+import asyncio, json, logging
 from . . import schemas
 from . .config import settings
 import redis.asyncio as redis
+
+logger = logging.getLogger("jutustelu.connection_manager")
 
 class LocalConnection:
     def __init__(self, websocket: WebSocket, user_data : schemas.Userdata):
@@ -43,6 +45,15 @@ class ConnectionManager:
     async def start_listner(self):
         await self.pubsub.subscribe(GLOBAL_CHANNEL)
         self._listner_task = asyncio.create_task(self._pubsub_listner_loop())
+
+    async def _safe_send(slef, websocket:WebSocket, payload :dict):
+    #handles the sending if data is not send handles the exception and return false to remove ws from active conn
+        try:
+            await websocket.send_json(payload)
+            return True
+        except:
+            logger.warning("sending to websocket failed droping dead connection", exc_info =True)
+            return False
     
     async def _pubsub_listner_loop(self):
         async for raw_data in self.pubsub.listen():
@@ -57,55 +68,67 @@ class ConnectionManager:
             #storing the message in cache for later use 
             await self.redis.lpush(channel,payload)
             await self.redis.ltrim(channel,0,99)
-
+            
             if channel == GLOBAL_CHANNEL:
+                dead_connection =[]
                 for conn in list(self.active_connections):
-                    try:
-                        await conn.websocket.send_json({"username":username, "message":message})
-                    except Exception:
-                        pass
+                    payload = {"channel":GLOBAL_CHANNEL, "username":username, "message":message}
+                    if not await self._safe_send(conn.websocket, payload):
+                        dead_connection.append(conn)
+                #cleanup of socket
+                for conn in dead_connection:
+                    self.disconnect_global(conn.websocket,username)
 
             elif channel.startswith("room:broadcast:"):
                 room_id : str = channel.removeprefix("room:broadcast:")
+                dead_connection =[]
                 for user in self.rooms.get(room_id,[]):
-                    try:
-                        await user.websocket.send_json({"username":username, "message":message})
-                    except Exception:
-                        pass
+                    payload = {"channel" : room_id, "username":username, "message":message}
+                    if not await self._safe_send(user.websocket, payload):
+                        dead_connection.append(user)
+
+                for conn in dead_connection:
+                    self.disconnect_global(conn.websocket,username)
+
             elif channel == ONLINE_USERS:
-                for conn in list(self.active_connections):
-                    try:
-                        await conn.websocket.send_json({"channel":ONLINE_USERS,"username":message})
-                    except Exception:
-                        pass
+                dead_connection = []
+                payload = {"channel":ONLINE_USERS,"username":message}
+                if not await self._safe_send(conn.websocket, payload):
+                    dead_connection.append(conn)
+                #cleanup of dead socket
+                for conn in dead_connection:
+                    self.disconnect_global(conn.websocket,username)
+
             elif channel == OFFLINE_USERS:
-                for conn in list(self.active_connections):
-                    try:
-                        await conn.websocket.send_json({"channel":OFFLINE_USERS,"username":message})
-                    except Exception:
-                        pass
+                dead_connection = []
+                payload = {"channel":OFFLINE_USERS,"username":message}
+                if not await self._safe_send(conn.websocket, payload):
+                    dead_connection.append(conn)
+                #cleanup of dead socket
+                for conn in dead_connection:
+                    self.disconnect_global(conn.websocket,username)
 
     async def connect_global(self, websocket: WebSocket, username : str):
         await websocket.accept()
         self.active_connections.append(GlobalConnection(websocket,username))
         #online status on
-        count = await self.redis.hincrby("Online_users:",username,1)
+        count = await self.redis.hincrby("online_users:",username,1)
         payload = json.dumps({
             "channel" : ONLINE_USERS,
             "username" : username,
             "data" : "online"
         })
-        await self.pubsub.publish(ONLINE_USERS,payload)
+        await self.redis.publish(ONLINE_USERS,payload)
 
         #last 100 messages
-        messages = self.redis.lrange(GLOBAL_CHANNEL,0,99)
+        messages = await self.redis.lrange(GLOBAL_CHANNEL,0,99)
         messages.reverse()
         payload = {
             "type" : "message history",
             "room_id" : GLOBAL_CHANNEL,
             "messages" : [json.loads(message) for message in messages]
         }
-        websocket.send_json(payload)
+        await websocket.send_json(payload)
 
     async def create_room(self, websocket:WebSocket, user_data : schemas.Userdata):
         room_host_key = _room_host_key(room_id=user_data.room_id)
@@ -245,16 +268,16 @@ class ConnectionManager:
                     break
 
 
-        count = await self.redis.hincrby("Online_users:",username,-1)
+        count = await self.redis.hincrby("online_users:",username,-1)
         if count <= 0:
-            await self.redis.hdel("Online_users:",username)
+            await self.redis.hdel("online_users:",username)
             count = 0
             payload = json.dumps({
                 "channel": OFFLINE_USERS,
                 "username":username,
                 "data" : "online"
             })
-            await self.pubsub.publish(OFFLINE_USERS,payload)
+            await self.redis.publish(OFFLINE_USERS,payload)
 
     async def _publish_to_room(self, room_id : str, message : str, username :str):
         payload = json.dumps({"channel":_room_channel(room_id), "username":username ,"data":message})
@@ -283,11 +306,16 @@ class ConnectionManager:
             self.rooms.setdefault(room,[]).append(LocalConnection(websocket, user_data))
             #sending that rooms messages too
             channel = _room_channel(room)
+            host = await self.redis.get(_room_host_key(room))
+            is_host = False
+            if(host==username):
+                is_host = True
             messages = await self.redis.lrange(channel, 0, 99)
             messages.reverse()
             payload = {
                 "type" : "message history",
                 "room_id" : room,
+                "host" : is_host,
                 "messages" : [json.loads(message) for message in messages]
             }
             payload_list.append(payload)

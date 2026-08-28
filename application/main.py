@@ -1,10 +1,11 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, logger
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import auth, user, websockets, persistantDataShareing
 from .config import settings
-import redis
+import redis, logging
 from .routers.websockets import lifespan
 
+logging.basicConfig(level=logging.INFO)
 app = FastAPI(lifespan = lifespan)
 
 origins = ["*"]

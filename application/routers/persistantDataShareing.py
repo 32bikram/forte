@@ -15,10 +15,3 @@ async def get_online_users():
     online_users = await manager.redis.hkeys("online_users:")
     return {"online_users":online_users}
 
-@router.get("/connected_rooms")
-async def get_connected_rooms(websocket:WebSocket, user_data : schemas.Userdata):
-    rooms = await manager.redis.sget(_user_rooms_key(user_data.username))
-    for room in rooms:
-        manager.rooms.get(room,[]).append(LocalConnection(websocket, user_data))
-    return {"connected_rooms":rooms}
-
