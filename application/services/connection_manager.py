@@ -276,6 +276,7 @@ class ConnectionManager:
     #when an user logs back in join him in the rooms he is connected
     async def get_connected_back_to_rooms(self, websocket:WebSocket, username):
         rooms = await self.redis.smembers(f"user:rooms:{username}")
+        payload_list = []
         for room in rooms:
             user_data = schemas.Userdata(username=username,room_id=room)
             self.rooms.setdefault(room,[]).append(LocalConnection(websocket, user_data))
@@ -288,7 +289,8 @@ class ConnectionManager:
                 "room_id" : room,
                 "messages" : [json.loads(message) for message in messages]
             }
-            await websocket.send_json(payload)
+            payload_list.append(payload)
+        await websocket.send_json(payload_list)
 
     async def broadcast_local(self, user_data:schemas.Userdata, message:str):
         user_rooms_key = _user_rooms_key(user_data.username)
