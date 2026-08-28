@@ -25,6 +25,8 @@ def _user_rooms_key(username : str):
 def _room_host_key(room_id : str):
     return f"room:host:{room_id}"
 GLOBAL_CHANNEL = "global_broadcast"
+ONLINE_USERS = "online_users"
+OFFLINE_USERS = "offline_users"
 def _room_channel(room_id : str):
     return f"room:broadcast:{room_id}"
 
@@ -41,20 +43,25 @@ class ConnectionManager:
     async def start_listner(self):
         await self.pubsub.subscribe(GLOBAL_CHANNEL)
         self._listner_task = asyncio.create_task(self._pubsub_listner_loop())
-
+    
     async def _pubsub_listner_loop(self):
         async for raw_data in self.pubsub.listen():
             if raw_data["type"] != "message":
                 continue
 
-            channel: str = raw_data["channel"]
+            channel: str = raw_data["channel"] #global_channel/ room:broadcast:1234/ online_users/ offline_users
             payload : dict = json.loads(raw_data["data"])
+            username : str = payload["username"]
             message : str = payload["data"]
+
+            #storing the message in cache for later use 
+            await self.redis.lpush(channel,payload)
+            await self.redis.ltrim(channel,0,99)
 
             if channel == GLOBAL_CHANNEL:
                 for conn in list(self.active_connections):
                     try:
-                        await conn.websocket.send_text(message)
+                        await conn.websocket.send_json({"username":username, "message":message})
                     except Exception:
                         pass
 
@@ -62,13 +69,42 @@ class ConnectionManager:
                 room_id : str = channel.removeprefix("room:broadcast:")
                 for user in self.rooms.get(room_id,[]):
                     try:
-                        await user.websocket.send_text(message)
+                        await user.websocket.send_json({"username":username, "message":message})
                     except Exception:
                         pass
-            
+            elif channel == ONLINE_USERS:
+                for conn in list(self.active_connections):
+                    try:
+                        await conn.websocket.send_json({"channel":ONLINE_USERS,"username":message})
+                    except Exception:
+                        pass
+            elif channel == OFFLINE_USERS:
+                for conn in list(self.active_connections):
+                    try:
+                        await conn.websocket.send_json({"channel":OFFLINE_USERS,"username":message})
+                    except Exception:
+                        pass
+
     async def connect_global(self, websocket: WebSocket, username : str):
         await websocket.accept()
         self.active_connections.append(GlobalConnection(websocket,username))
+        #online status on
+        count = await self.redis.hincrby("Online_users:",username,1)
+        payload = json.dumps({
+            "channel" : ONLINE_USERS,
+            "username" : username,
+            "data" : "online"
+        })
+        await self.pubsub.publish(ONLINE_USERS,payload)
+
+        messages = self.redis.lrange(GLOBAL_CHANNEL,0,99)
+        messages.reverse()
+        payload = {
+            "type" : "message history",
+            "room_id" : GLOBAL_CHANNEL,
+            "messages" : [json.loads(message) for message in messages]
+        }
+        websocket.send_json(payload)
 
     async def create_room(self, websocket:WebSocket, user_data : schemas.Userdata):
         room_host_key = _room_host_key(room_id=user_data.room_id)
@@ -135,7 +171,7 @@ class ConnectionManager:
 
         await self.pubsub.subscribe(room_channel)
 
-        await self._publish_to_room(user_data.room_id, f"{user_data.username} has joined the room")
+        await self._publish_to_room(user_data.room_id, f"{user_data.username} has joined the room", user_data.username)
 
         return schemas.WebSocketResponse(
                         status="ok",
@@ -158,7 +194,7 @@ class ConnectionManager:
         if await self.redis.get(room_host_key) == user_data.username:
             members = await self.redis.hkeys(room_members_key)
 
-            await self._publish_to_room(user_data.room_id, f"room with id:{user_data.room_id} has been deleted")
+            await self._publish_to_room(user_data.room_id, f"room with id:{user_data.room_id} has been deleted", user_data.username)
             for member in members:
                 await self.redis.srem(_user_rooms_key(member),user_data.room_id)
 
@@ -177,7 +213,7 @@ class ConnectionManager:
         else:
             members = await self.redis.hkeys(room_members_key) #getting all members
             await self.send_personal_message("you are leaving the room", websocket)
-            await self._publish_to_room(user_data.room_id, f"{user_data.username} has left the room")
+            await self._publish_to_room(user_data.room_id, f"{user_data.username} has left the room", username=user_data.username)
             await self.redis.srem(user_room_key, user_data.room_id)
             await self.redis.hdel(room_members_key, user_data.username)
 
@@ -199,25 +235,60 @@ class ConnectionManager:
                 self.active_connections.remove(conn)
                 break
 
-    async def _publish_to_room(self, room_id : str, message : str):
-        payload = json.dumps({"channel":_room_channel(room_id), "data":message})
+        rooms = await self.redis.smembers(_user_rooms_key(username))
+        for room in rooms:
+            local_rooms = self.rooms.get(room,[])
+            for local_room in local_rooms:
+                if(local_room.websocket == websocket):
+                    self.rooms[room].remove(local_room)
+                    break
+
+
+        count = await self.redis.hincrby("Online_users:",username,-1)
+        if count <= 0:
+            await self.redis.hdel("Online_users:",username)
+            count = 0
+            payload = json.dumps({
+                "channel": OFFLINE_USERS,
+                "username":username,
+                "data" : "online"
+            })
+            await self.pubsub.publish(OFFLINE_USERS,payload)
+
+    async def _publish_to_room(self, room_id : str, message : str, username :str):
+        payload = json.dumps({"channel":_room_channel(room_id), "username":username ,"data":message})
         await self.redis.publish(_room_channel(room_id), payload)
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         await websocket.send_text(message)
 
-    async def broadcast_global(self, message: str):
+    async def broadcast_global(self, message: str, username : str):
         # for connection in self.active_connections:
         #     await connection.websocket.send_text(message)
-        await self.redis.publish(GLOBAL_CHANNEL, message)
+        payload = json.dumps({"channel":GLOBAL_CHANNEL,"username":username, "data":message})
+        await self.redis.publish(GLOBAL_CHANNEL, payload)
 
         return schemas.WebSocketResponse(
             status="ok",
             detail="successfully published message",
             action = "broadcast_global"
         )
-
-
+    #when an user logs back in join him in the rooms he is connected
+    async def get_connected_back_to_rooms(self, websocket:WebSocket, username):
+        rooms = await self.redis.smembers(f"user:rooms:{username}")
+        for room in rooms:
+            user_data = schemas.Userdata(username=username,room_id=room)
+            self.rooms.setdefault(room,[]).append(LocalConnection(websocket, user_data))
+            #sending that rooms messages too
+            channel = _room_channel(room)
+            messages = await self.redis.lrange(channel, 0, 99)
+            messages.reverse()
+            payload = {
+                "type" : "message history",
+                "room_id" : room,
+                "messages" : [json.loads(message) for message in messages]
+            }
+            await websocket.send_json(payload)
 
     async def broadcast_local(self, user_data:schemas.Userdata, message:str):
         user_rooms_key = _user_rooms_key(user_data.username)
@@ -229,7 +300,7 @@ class ConnectionManager:
                 action = "broadcast_local"
             )
         
-        await self._publish_to_room(user_data.room_id, message)
+        await self._publish_to_room(user_data.room_id, message, user_data.username)
         return schemas.WebSocketResponse(status="ok", detail="successfully published message", action = "broadcast_local")
 
 manager = ConnectionManager()
