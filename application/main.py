@@ -7,7 +7,7 @@ from .routers.websockets import lifespan
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(lifespan = lifespan)
-origins = ["https://forte-frontend-iota.vercel.app/","https://fortefrontend.vercel.app/"]
+origins = ["https://forte-frontend-iota.vercel.app","https://fortefrontend.vercel.app"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,  # or restrict to your frontend's origin
