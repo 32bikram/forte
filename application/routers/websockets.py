@@ -3,7 +3,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, APIRouter
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 from . . import oauth2, schemas, database
-from . .services.connection_manager import manager
+from . .services.connection_manager import manager, LocalConnection
 
 @asynccontextmanager
 async def lifespan(app : FastAPI):
@@ -74,7 +74,7 @@ async def websocket_endpoint(
                 new_data = await validater(data, schemas.GlobalMessage)
                 if new_data is None:
                     continue
-                response = await manager.broadcast_global(new_data.message)
+                response = await manager.broadcast_global(new_data.message, username)
                 await responder(response)
 
             elif data["type"] == "create room":
@@ -108,6 +108,9 @@ async def websocket_endpoint(
                     continue
                 response = await manager.disconnect_local(websocket, user_data)
                 await responder(response)
+
+            elif data["type"] == "joinback rooms":
+                await manager.get_connected_back_to_rooms(websocket, username)
 
             else:
                 response = schemas.WebSocketResponse(status = "error", detail="invalid data format", action="data vlidation")
