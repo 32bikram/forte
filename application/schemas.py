@@ -38,3 +38,7 @@ class WebSocketResponse(BaseModel):
     status : str
     detail : str
     action : str
+
+class Roommembers(BaseModel):
+    room_id : str
+    members : dict[str,str]

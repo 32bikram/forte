@@ -4,7 +4,7 @@ from . . import schemas
 from . .config import settings
 import redis.asyncio as redis
 
-logger = logging.getLogger("jutustelu.connection_manager")
+logger = logging.getLogger("forte.connection_manager")
 
 class LocalConnection:
     def __init__(self, websocket: WebSocket, user_data : schemas.Userdata):
