@@ -1,4 +1,4 @@
-# Forte [🔗](https://fortefrontend.vercel.com)
+# Forte [🔗](https://fortefrontend.vercel.app)
 
 Forte is a FastAPI backend for a real-time chat application. It provides JWT-based
 authentication as well as cookies and a single WebSocket connection per client that supports a global
