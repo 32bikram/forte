@@ -312,7 +312,7 @@ Notes:
 
 Most actions reply with a `WebSocketResponse`:
 ```json
-{ "status": "ok" | "error", "detail": "human readable detail", "action": "function_name" }
+{ "status": "ok" | "error", "detail": "readable detail", "action": "function_name" }
 ```
 
 `action` mirrors the request type (`create_room`, `connect_local`, `disconnect_local`,
